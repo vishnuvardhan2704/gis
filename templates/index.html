@@ -108,6 +108,18 @@
             <p style="font-size: 0.7rem; color: #64748b; margin: 0.5rem 0 0 0; text-align: center;">
                 Professional topographic visualization
             </p>
+
+            <!-- VR View button -->
+            <button id="openVrBtn" class="btn-3d" style="margin-top: 0.5rem; background: rgba(59,130,246,0.10); border-color: rgba(59,130,246,0.25);" title="Open VR-ready 3D viewer (scan QR on phone)">
+                <span>🥽</span> <span>Open VR Viewer</span>
+            </button>
+
+            <!-- QR code for phone VR -->
+            <div id="vrQrPanel" class="hidden" style="margin-top: 0.75rem; text-align: center;">
+                <p style="font-size: 0.7rem; color: #94a3b8; margin-bottom: 0.4rem;">Scan with phone for VR:</p>
+                <img id="vrQrImg" src="" alt="QR to VR" style="width: 120px; height: 120px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.08);">
+                <p id="vrUrlText" style="font-size: 0.6rem; color: #64748b; margin-top: 0.3rem; word-break: break-all;"></p>
+            </div>
         </div>
 
         <!-- Legend -->

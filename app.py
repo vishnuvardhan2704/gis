@@ -146,6 +146,86 @@ def risk_overlay(job_id):
     return jsonify({"error": "Overlay not ready"}), 404
 
 
+# ── VR / 3D Export Routes ───────────────────────────────────────────────────
+
+@app.route("/vr/<job_id>")
+def vr_viewer(job_id):
+    """Serve the self-hosted VR viewer page for the given job."""
+    network_ip = _get_local_ip()
+    return render_template("vr_viewer.html", job_id=job_id, network_ip=network_ip)
+
+
+@app.route("/api/export-vr/<job_id>")
+def export_vr_glb(job_id):
+    """Generate and serve a GLB terrain model for VR viewing."""
+    from src.export_vr import build_terrain_glb
+
+    risk_tif = os.path.join(config.OUTPUT_DIR, config.RISK_GEOTIFF)
+    dem_tif = os.path.join(config.OUTPUT_DIR, "dem_terrain.tif")
+
+    if not os.path.exists(risk_tif) or not os.path.exists(dem_tif):
+        return jsonify({"error": "Analysis data not ready. Run an analysis first."}), 404
+
+    glb_path = os.path.join(config.OUTPUT_DIR, f"terrain_{job_id}.glb")
+
+    # Build GLB if not already cached
+    if not os.path.exists(glb_path):
+        try:
+            build_terrain_glb(
+                dem_tif_path=dem_tif,
+                fsi_tif_path=risk_tif,
+                output_path=glb_path,
+                grid_size=256,
+                terrain_size=100.0,
+            )
+        except Exception as e:
+            traceback.print_exc()
+            return jsonify({"error": f"GLB export failed: {e}"}), 500
+
+    return send_file(glb_path, mimetype="model/gltf-binary", download_name="flood_terrain.glb")
+
+
+@app.route("/api/qr-vr/<job_id>")
+def qr_vr(job_id):
+    """Generate a QR code PNG that points to the VR viewer on the local network."""
+    import qrcode
+    import socket
+
+    # Get local network IP
+    local_ip = _get_local_ip()
+    vr_url = f"https://{local_ip}:5050/vr/{job_id}"
+
+    qr = qrcode.QRCode(version=1, box_size=8, border=2)
+    qr.add_data(vr_url)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="#0f1117", back_color="#f8fafc")
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+
+    return send_file(buf, mimetype="image/png", download_name=f"vr_qr_{job_id}.png")
+
+
+@app.route("/api/network-ip")
+def network_ip():
+    """Return the local network IP for phone VR access."""
+    return jsonify({"ip": _get_local_ip()})
+
+
+def _get_local_ip() -> str:
+    """Get the machine's local network IP address."""
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+
 @app.route("/api/terrain3d/<job_id>")
 def terrain3d_data(job_id):
     """Serve high-resolution DEM + FSI grids as JSON for professional 3D view."""
@@ -604,6 +684,13 @@ def _route_to_geojson(route_coords):
 
 
 if __name__ == "__main__":
+    import socket
+
+    local_ip = _get_local_ip()
     print("🌊 Flood Susceptibility GUI starting...")
-    print("   Open http://localhost:5050 in your browser")
-    app.run(debug=False, port=5050, threaded=True)
+    print(f"   Local:   https://localhost:5050")
+    print(f"   Network: https://{local_ip}:5050")
+    print(f"   Phone VR: connect to the same WiFi, then scan the QR code")
+    print(f"   ⚠  Self-signed cert — accept the browser warning on phone")
+    app.run(debug=False, host="0.0.0.0", port=5050, threaded=True,
+            ssl_context=('cert.pem', 'key.pem'))

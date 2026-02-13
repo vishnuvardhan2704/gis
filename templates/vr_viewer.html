@@ -1,0 +1,760 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Flood Risk — 3D VR Viewer</title>
+
+    <!--
+        Strategy: Load standalone Three.js r146 + OrbitControls first (same as index.html).
+        Save OrbitControls. Then load A-Frame (which overwrites THREE global with r158).
+        Our viewer code uses the saved OrbitControls constructor.
+    -->
+    <script src="https://unpkg.com/three@0.146.0/build/three.min.js"></script>
+    <script src="https://unpkg.com/three@0.146.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://unpkg.com/three@0.146.0/examples/js/loaders/GLTFLoader.js"></script>
+    <script>
+        // Save references before A-Frame overwrites THREE global
+        window._THREE146 = THREE;
+        window._OrbitControls = THREE.OrbitControls;
+        window._GLTFLoader = THREE.GLTFLoader;
+    </script>
+    <!-- A-Frame for VR stereo mode only (loads AFTER we save r146 refs) -->
+    <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            background: #0f1117;
+            color: #e2e8f0;
+            font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+            height: 100vh;
+            height: 100dvh;
+            overflow: hidden;
+        }
+
+        /* ── Top bar ──────────────────────────────────────────── */
+        .topbar {
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.6rem 1rem;
+            background: rgba(15,17,23,0.92);
+            border-bottom: 1px solid rgba(255,255,255,0.06);
+            z-index: 10;
+            backdrop-filter: blur(8px);
+        }
+        .topbar h1 { font-size: 0.95rem; font-weight: 600; }
+        .topbar a { color: #94a3b8; text-decoration: none; font-size: 0.8rem; }
+
+        /* ── Bottom controls ──────────────────────────────────── */
+        .controls {
+            position: fixed;
+            bottom: 1rem;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 0.6rem;
+            z-index: 10;
+        }
+        .btn {
+            padding: 0.6rem 1.2rem;
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 0.5rem;
+            font-size: 0.8rem;
+            font-weight: 500;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 0.3rem;
+            backdrop-filter: blur(8px);
+            background: rgba(255,255,255,0.06);
+            color: #cbd5e1;
+            transition: all 0.15s;
+            text-decoration: none;
+        }
+        .btn:hover, .btn:active { background: rgba(255,255,255,0.12); color: #f8fafc; }
+        .btn-vr {
+            background: rgba(59,130,246,0.15);
+            color: #60a5fa;
+            border-color: rgba(59,130,246,0.3);
+        }
+
+        /* ── Info panel (desktop only) ──────────────────────── */
+        .info {
+            position: fixed;
+            top: 4rem;
+            right: 0.75rem;
+            background: rgba(15,17,23,0.9);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 0.6rem;
+            padding: 0.75rem;
+            font-size: 0.7rem;
+            color: #94a3b8;
+            max-width: 200px;
+            line-height: 1.5;
+            backdrop-filter: blur(8px);
+            z-index: 10;
+        }
+        .info h3 { font-size: 0.75rem; color: #f8fafc; margin-bottom: 0.4rem; }
+        .legend-row { display: flex; align-items: center; gap: 0.4rem; margin: 0.2rem 0; }
+        .dot { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+
+        /* ── QR Modal ─────────────────────────────────────────── */
+        .modal-bg {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.75);
+            z-index: 200;
+            align-items: center;
+            justify-content: center;
+        }
+        .modal-bg.show { display: flex; }
+        .modal {
+            background: #1e2030;
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 0.75rem;
+            padding: 1.5rem;
+            max-width: 340px;
+            width: 90%;
+            text-align: center;
+        }
+        .modal h2 { font-size: 1rem; margin-bottom: 0.4rem; }
+        .modal p { font-size: 0.78rem; color: #94a3b8; line-height: 1.5; margin-bottom: 0.75rem; }
+        .modal .qr-box {
+            background: #fff;
+            border-radius: 0.5rem;
+            padding: 0.5rem;
+            display: inline-block;
+            margin-bottom: 0.5rem;
+        }
+        .modal .qr-box img { width: 140px; height: 140px; display: block; }
+        .modal .url { font-size: 0.65rem; color: #60a5fa; font-family: monospace; word-break: break-all; margin-bottom: 1rem; }
+        .modal-close {
+            padding: 0.5rem 1.5rem;
+            background: rgba(255,255,255,0.08);
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 0.4rem;
+            color: #e2e8f0;
+            font-size: 0.8rem;
+            cursor: pointer;
+        }
+
+        /* ── Loading ──────────────────────────────────────────── */
+        .loading-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(15,17,23,0.97);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+            transition: opacity 0.5s;
+        }
+        .loading-overlay.done { opacity: 0; pointer-events: none; }
+        .spinner {
+            width: 36px; height: 36px;
+            border: 3px solid rgba(59,130,246,0.2);
+            border-top-color: #3b82f6;
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .loading-overlay p { margin-top: 0.75rem; font-size: 0.8rem; color: #94a3b8; }
+
+        /* ── 3D canvas fills viewport ─────────────────────────── */
+        #viewer3d {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            z-index: 1;
+            touch-action: none;   /* critical for OrbitControls touch on mobile */
+        }
+
+        /* ── A-Frame VR scene (hidden until VR mode) ─────────── */
+        #vrScene {
+            display: none;
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            z-index: 50;
+        }
+        #vrScene.active { display: block; }
+
+        .a-enter-vr-button {
+            background: rgba(59,130,246,0.2) !important;
+            border: 1px solid rgba(59,130,246,0.4) !important;
+            border-radius: 0.5rem !important;
+            bottom: 4rem !important;
+            right: 1rem !important;
+        }
+
+        /* ── Mobile orbit/zoom buttons ──────────────────── */
+        .mobile-ctrls {
+            display: none;
+            position: fixed;
+            right: 0.7rem;
+            bottom: 50%;
+            transform: translateY(50%);
+            flex-direction: column;
+            gap: 0.4rem;
+            z-index: 12;
+        }
+        .ctrl-btn {
+            width: 46px;
+            height: 46px;
+            border: 1px solid rgba(255,255,255,0.15);
+            border-radius: 50%;
+            background: rgba(15,17,23,0.88);
+            color: #cbd5e1;
+            font-size: 1.2rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            backdrop-filter: blur(8px);
+            -webkit-tap-highlight-color: transparent;
+            touch-action: manipulation;
+            user-select: none;
+            line-height: 1;
+        }
+        .ctrl-btn:active {
+            background: rgba(59,130,246,0.3);
+            border-color: rgba(59,130,246,0.5);
+            color: #93c5fd;
+        }
+        .ctrl-btn .label { font-size: 0.5rem; }
+        .ctrl-sep {
+            width: 30px; height: 1px;
+            background: rgba(255,255,255,0.1);
+            margin: 0.15rem auto;
+        }
+
+        /* Show on touch devices */
+        @media (hover: none) and (pointer: coarse) {
+            .mobile-ctrls { display: flex; }
+        }
+
+        /* ── VR Setup Overlay ──────────────────────────────── */
+        .vr-setup {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.85);
+            z-index: 60;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+        }
+        .vr-setup.active { display: flex; }
+        .vr-setup-card {
+            background: #1e2030;
+            border: 1px solid rgba(59,130,246,0.2);
+            border-radius: 0.75rem;
+            padding: 1.5rem;
+            max-width: 320px;
+            width: 90%;
+            text-align: center;
+        }
+        .vr-setup-card h2 { font-size: 1rem; margin-bottom: 0.5rem; color: #f8fafc; }
+        .vr-setup-card p { font-size: 0.78rem; color: #94a3b8; line-height: 1.6; margin-bottom: 1rem; }
+        .vr-setup-card .vr-adj {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 0.4rem;
+            margin-bottom: 1rem;
+        }
+        .vr-adj-btn {
+            padding: 0.6rem 0;
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 0.4rem;
+            background: rgba(255,255,255,0.05);
+            color: #cbd5e1;
+            font-size: 0.85rem;
+            cursor: pointer;
+            touch-action: manipulation;
+        }
+        .vr-adj-btn:active { background: rgba(59,130,246,0.2); }
+        .vr-start-btn {
+            padding: 0.7rem 2rem;
+            background: rgba(59,130,246,0.2);
+            border: 1px solid rgba(59,130,246,0.4);
+            border-radius: 0.5rem;
+            color: #60a5fa;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .vr-start-btn:active { background: rgba(59,130,246,0.35); }
+
+        @media (max-width: 640px) {
+            .info { display: none; }
+            .btn { font-size: 0.72rem; padding: 0.5rem 0.9rem; }
+        }
+    </style>
+</head>
+
+<body>
+    <!-- Loading -->
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="spinner"></div>
+        <p>Loading 3D terrain...</p>
+    </div>
+
+    <!-- Top bar -->
+    <div class="topbar" id="topbar">
+        <h1>🌊 Flood Terrain 3D</h1>
+        <a href="/">← Back</a>
+    </div>
+
+    <!-- Main 3D canvas (Three.js + OrbitControls — same as terrain3d.js) -->
+    <canvas id="viewer3d"></canvas>
+
+    <!-- A-Frame scene for VR stereo mode only (hidden by default) -->
+    <div id="vrScene">
+        <a-scene
+            id="aScene"
+            vr-mode-ui="enabled: true"
+            device-orientation-permission-ui="enabled: true"
+            renderer="antialias: true; colorManagement: true"
+            embedded
+            style="width: 100%; height: 100%;">
+            <a-sky color="#1a1d2e"></a-sky>
+            <a-entity light="type: ambient; color: #BBB; intensity: 0.7"></a-entity>
+            <a-entity light="type: directional; color: #FFF; intensity: 0.9" position="50 100 50"></a-entity>
+            <a-entity id="vrTerrainModel"
+                      gltf-model="/api/export-vr/{{ job_id }}"
+                      position="0 0 0" scale="1 1 1"></a-entity>
+            <a-entity id="cameraRig" position="0 40 60">
+                <a-camera id="vrCam"
+                          look-controls="magicWindowTrackingEnabled: true; pointerLockEnabled: false; touchEnabled: true"
+                          wasd-controls="enabled: false"
+                          fov="80" near="0.1" far="2000"
+                          rotation="-30 0 0">
+                </a-camera>
+            </a-entity>
+        </a-scene>
+    </div>
+
+    <!-- Info (desktop) -->
+    <div class="info" id="infoPanel">
+        <h3>Risk Legend</h3>
+        <div class="legend-row"><div class="dot" style="background:rgb(34,139,34)"></div> Low (0–0.33)</div>
+        <div class="legend-row"><div class="dot" style="background:rgb(255,215,0)"></div> Medium (0.33–0.66)</div>
+        <div class="legend-row"><div class="dot" style="background:rgb(178,34,34)"></div> High (0.66–1.0)</div>
+        <hr style="border:none;border-top:1px solid rgba(255,255,255,0.08);margin:0.5rem 0">
+        <p>Drag to orbit · Scroll to zoom<br>Right-drag to pan · Pinch on mobile</p>
+    </div>
+
+    <!-- Mobile orbit/zoom buttons (right edge, always visible on touch devices) -->
+    <div class="mobile-ctrls" id="mobileControls">
+        <button class="ctrl-btn" onclick="zoomIn()"  title="Zoom In">＋</button>
+        <button class="ctrl-btn" onclick="zoomOut()" title="Zoom Out">−</button>
+        <div class="ctrl-sep"></div>
+        <button class="ctrl-btn" onclick="orbitUp()"    title="Tilt Up">▲</button>
+        <button class="ctrl-btn" onclick="orbitDown()"  title="Tilt Down">▼</button>
+        <div class="ctrl-sep"></div>
+        <button class="ctrl-btn" onclick="rotateLeft()"  title="Rotate Left">◀</button>
+        <button class="ctrl-btn" onclick="rotateRight()" title="Rotate Right">▶</button>
+    </div>
+
+    <!-- Bottom controls -->
+    <div class="controls" id="controlBar">
+        <button class="btn" onclick="resetCam()">🔄 Reset</button>
+        <button class="btn btn-vr" id="btnVR" onclick="handleVR()">🥽 Enter VR</button>
+        <a class="btn" href="/api/export-vr/{{ job_id }}" download="flood_terrain.glb">💾 GLB</a>
+    </div>
+
+    <!-- VR Setup overlay (mobile: adjust view before entering VR) -->
+    <div class="vr-setup" id="vrSetup">
+        <div class="vr-setup-card">
+            <h2>🥽 Adjust View for VR</h2>
+            <p>Set your preferred zoom and angle <b>before</b> putting the phone in the VR box. The VR headset will use gyroscope for looking around from this position.</p>
+            <div class="vr-adj">
+                <button class="vr-adj-btn" onclick="rotateLeft()">◀ Rotate</button>
+                <button class="vr-adj-btn" onclick="orbitUp()">▲ Tilt Up</button>
+                <button class="vr-adj-btn" onclick="rotateRight()">Rotate ▶</button>
+                <button class="vr-adj-btn" onclick="zoomIn()">🔍 Zoom +</button>
+                <button class="vr-adj-btn" onclick="resetCam()">🔄 Reset</button>
+                <button class="vr-adj-btn" onclick="zoomOut()">🔍 Zoom −</button>
+            </div>
+            <p style="font-size:0.7rem;">Tap <b>Start VR</b> when ready, then place phone in VR box.</p>
+            <button class="vr-start-btn" onclick="confirmEnterVR()">▶ Start VR</button>
+            <div style="margin-top:0.7rem">
+                <button class="modal-close" onclick="cancelVRSetup()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- QR Modal (desktop) -->
+    <div class="modal-bg" id="modal">
+        <div class="modal">
+            <h2>🥽 Phone VR</h2>
+            <p>Scan this QR on your phone (same WiFi):</p>
+            <div class="qr-box"><img src="/api/qr-vr/{{ job_id }}" alt="QR"></div>
+            <div class="url" id="modalUrl"></div>
+            <p style="text-align:left;font-size:0.72rem;line-height:1.7">
+                1. Open URL on phone<br>
+                2. Tap the <b>🥽 VR goggles</b> button (bottom-right)<br>
+                3. Screen splits into stereo + gyro activates<br>
+                4. Place phone in VR box — head tracking is automatic!
+            </p>
+            <button class="modal-close" onclick="closeModal()">Got it</button>
+        </div>
+    </div>
+
+    <script>
+    (function() {
+        'use strict';
+
+        var JOB = '{{ job_id }}';
+        var NETWORK_IP = '{{ network_ip }}';
+        var GLB_URL = '/api/export-vr/' + JOB;
+
+        // Use the saved Three.js r146 (before A-Frame overwrote it)
+        var T = window._THREE146;
+        var OrbitControls = window._OrbitControls;
+        var GLTFLoader = window._GLTFLoader;
+
+        // ═══════════════════════════════════════════════════════
+        //  Three.js r146 viewer with OrbitControls
+        // ═══════════════════════════════════════════════════════
+        var scene3, camera3, renderer3, controls3;
+        var animId = null;
+        var initCamPos = null, initCamTarget = null;
+
+        function initViewer() {
+            var canvas = document.getElementById('viewer3d');
+
+            scene3 = new T.Scene();
+            scene3.background = new T.Color(0x0f1117);
+
+            camera3 = new T.PerspectiveCamera(
+                60, window.innerWidth / window.innerHeight, 0.1, 2000);
+            camera3.position.set(0, 40, 60);
+
+            renderer3 = new T.WebGLRenderer({ canvas: canvas, antialias: true });
+            renderer3.setSize(window.innerWidth, window.innerHeight);
+            renderer3.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer3.toneMapping = T.ACESFilmicToneMapping;
+            renderer3.toneMappingExposure = 1.0;
+
+            // OrbitControls — same as terrain3d.js
+            controls3 = new OrbitControls(camera3, canvas);
+            controls3.enableDamping = true;
+            controls3.dampingFactor = 0.08;
+            controls3.minDistance = 5;
+            controls3.maxDistance = 400;
+            controls3.maxPolarAngle = Math.PI / 2 - 0.05;
+            controls3.target.set(0, 0, 0);
+            controls3.enablePan = true;
+            controls3.panSpeed = 0.8;
+            controls3.rotateSpeed = 0.8;
+            controls3.zoomSpeed = 1.2;
+            controls3.touches = {
+                ONE: T.TOUCH.ROTATE,
+                TWO: T.TOUCH.DOLLY_PAN
+            };
+
+            // Lighting
+            var sun = new T.DirectionalLight(0xfff4e6, 1.3);
+            sun.position.set(-80, 60, 80);
+            scene3.add(sun);
+            scene3.add(new T.AmbientLight(0xa0b0c0, 0.5));
+            scene3.add(new T.HemisphereLight(0x87ceeb, 0x4a4a3a, 0.3));
+
+            // Grid
+            var grid = new T.GridHelper(200, 40, 0x404050, 0x202028);
+            grid.position.y = -0.5;
+            scene3.add(grid);
+
+            // Resize handler
+            window.addEventListener('resize', function() {
+                camera3.aspect = window.innerWidth / window.innerHeight;
+                camera3.updateProjectionMatrix();
+                renderer3.setSize(window.innerWidth, window.innerHeight);
+            });
+
+            // Prevent browser default touch gestures (page zoom/scroll)
+            // so OrbitControls can receive touch events properly
+            canvas.addEventListener('touchstart', function(e) {
+                if (e.touches.length >= 1) e.preventDefault();
+            }, { passive: false });
+            canvas.addEventListener('touchmove', function(e) {
+                e.preventDefault();
+            }, { passive: false });
+            canvas.addEventListener('touchend', function(e) {
+                e.preventDefault();
+            }, { passive: false });
+            // Also prevent context menu on long-press
+            canvas.addEventListener('contextmenu', function(e) { e.preventDefault(); });
+
+            loadGLB();
+            animate();
+            console.log('[3D] Viewer initialized with OrbitControls (THREE r146)');
+        }
+
+        function loadGLB() {
+            var loader = new GLTFLoader();
+            loader.load(
+                GLB_URL,
+                function(gltf) {
+                    console.log('[3D] GLB loaded successfully');
+                    scene3.add(gltf.scene);
+
+                    var box = new T.Box3().setFromObject(gltf.scene);
+                    var size = box.getSize(new T.Vector3());
+                    var center = box.getCenter(new T.Vector3());
+                    console.log('[3D] Model size:', size, 'center:', center);
+
+                    var maxDim = Math.max(size.x, size.z);
+                    var camDist = maxDim * 0.8;
+                    var camHeight = Math.max(size.y * 2.5, 20);
+
+                    camera3.position.set(
+                        center.x + camDist * 0.3,
+                        camHeight,
+                        center.z + camDist);
+                    controls3.target.copy(center);
+                    controls3.update();
+
+                    initCamPos = camera3.position.clone();
+                    initCamTarget = controls3.target.clone();
+
+                    document.getElementById('loadingOverlay').classList.add('done');
+                },
+                function(progress) {
+                    if (progress.total > 0) {
+                        var pct = Math.round(progress.loaded / progress.total * 100);
+                        var p = document.querySelector('.loading-overlay p');
+                        if (p) p.textContent = 'Loading terrain... ' + pct + '%';
+                    }
+                },
+                function(err) {
+                    console.error('[3D] GLB load error:', err);
+                    var p = document.querySelector('.loading-overlay p');
+                    if (p) p.textContent = 'Failed to load terrain model';
+                    setTimeout(function() {
+                        document.getElementById('loadingOverlay').classList.add('done');
+                    }, 2000);
+                }
+            );
+        }
+
+        function animate() {
+            animId = requestAnimationFrame(animate);
+            controls3.update();
+            renderer3.render(scene3, camera3);
+        }
+
+        // ═══════════════════════════════════════════════════════
+        //  Zoom / Orbit Button Controls (work on mobile)
+        // ═══════════════════════════════════════════════════════
+
+        var ZOOM_STEP = 8;
+        var ROTATE_STEP = Math.PI / 18;  // 10 degrees
+        var TILT_STEP = Math.PI / 24;    // 7.5 degrees
+
+        window.zoomIn = function() {
+            if (!controls3) return;
+            var dir = new T.Vector3().subVectors(controls3.target, camera3.position);
+            var dist = dir.length();
+            if (dist < controls3.minDistance + ZOOM_STEP) return;
+            dir.normalize();
+            camera3.position.addScaledVector(dir, ZOOM_STEP);
+            controls3.update();
+        };
+
+        window.zoomOut = function() {
+            if (!controls3) return;
+            var dir = new T.Vector3().subVectors(controls3.target, camera3.position);
+            var dist = dir.length();
+            if (dist > controls3.maxDistance - ZOOM_STEP) return;
+            dir.normalize();
+            camera3.position.addScaledVector(dir, -ZOOM_STEP);
+            controls3.update();
+        };
+
+        window.rotateLeft = function() {
+            if (!controls3) return;
+            var offset = new T.Vector3().subVectors(camera3.position, controls3.target);
+            var cos = Math.cos(ROTATE_STEP), sin = Math.sin(ROTATE_STEP);
+            var x = offset.x * cos + offset.z * sin;
+            var z = -offset.x * sin + offset.z * cos;
+            offset.x = x; offset.z = z;
+            camera3.position.copy(controls3.target).add(offset);
+            controls3.update();
+        };
+
+        window.rotateRight = function() {
+            if (!controls3) return;
+            var offset = new T.Vector3().subVectors(camera3.position, controls3.target);
+            var cos = Math.cos(-ROTATE_STEP), sin = Math.sin(-ROTATE_STEP);
+            var x = offset.x * cos + offset.z * sin;
+            var z = -offset.x * sin + offset.z * cos;
+            offset.x = x; offset.z = z;
+            camera3.position.copy(controls3.target).add(offset);
+            controls3.update();
+        };
+
+        window.orbitUp = function() {
+            if (!controls3) return;
+            var offset = new T.Vector3().subVectors(camera3.position, controls3.target);
+            var r = offset.length();
+            var theta = Math.atan2(Math.sqrt(offset.x * offset.x + offset.z * offset.z), offset.y);
+            var phi = Math.atan2(offset.z, offset.x);
+            theta = Math.max(0.1, theta - TILT_STEP);
+            offset.x = r * Math.sin(theta) * Math.cos(phi);
+            offset.y = r * Math.cos(theta);
+            offset.z = r * Math.sin(theta) * Math.sin(phi);
+            camera3.position.copy(controls3.target).add(offset);
+            controls3.update();
+        };
+
+        window.orbitDown = function() {
+            if (!controls3) return;
+            var offset = new T.Vector3().subVectors(camera3.position, controls3.target);
+            var r = offset.length();
+            var theta = Math.atan2(Math.sqrt(offset.x * offset.x + offset.z * offset.z), offset.y);
+            var phi = Math.atan2(offset.z, offset.x);
+            theta = Math.min(Math.PI / 2 - 0.05, theta + TILT_STEP);
+            offset.x = r * Math.sin(theta) * Math.cos(phi);
+            offset.y = r * Math.cos(theta);
+            offset.z = r * Math.sin(theta) * Math.sin(phi);
+            camera3.position.copy(controls3.target).add(offset);
+            controls3.update();
+        };
+
+        // ═══════════════════════════════════════════════════════
+        //  UI Actions
+        // ═══════════════════════════════════════════════════════
+
+        window.resetCam = function() {
+            if (initCamPos && initCamTarget) {
+                camera3.position.copy(initCamPos);
+                controls3.target.copy(initCamTarget);
+                controls3.update();
+            }
+        };
+
+        window.handleVR = function() {
+            if (isMobile()) {
+                // Show VR setup overlay so user can adjust view first
+                document.getElementById('vrSetup').classList.add('active');
+            } else {
+                showModal();
+            }
+        };
+
+        window.cancelVRSetup = function() {
+            document.getElementById('vrSetup').classList.remove('active');
+        };
+
+        window.confirmEnterVR = function() {
+            document.getElementById('vrSetup').classList.remove('active');
+            enterVRMode();
+        };
+
+        function transferCameraToVR() {
+            // Transfer camera position & look direction from Three.js to A-Frame
+            var rig = document.getElementById('cameraRig');
+            var vrCam = document.getElementById('vrCam');
+            if (!rig || !camera3 || !controls3) return;
+
+            // Set the camera rig position to match Three.js camera
+            rig.setAttribute('position', {
+                x: camera3.position.x,
+                y: camera3.position.y,
+                z: camera3.position.z
+            });
+
+            // Calculate pitch/yaw from camera→target direction
+            var dir = new T.Vector3().subVectors(controls3.target, camera3.position).normalize();
+            var pitch = Math.asin(-dir.y) * (180 / Math.PI);
+            var yaw = Math.atan2(dir.x, dir.z) * (180 / Math.PI);
+
+            // Set initial rotation on the camera (gyro will add on top of this)
+            vrCam.setAttribute('rotation', { x: pitch, y: yaw, z: 0 });
+            console.log('[VR] Camera transferred: pos', camera3.position, 'pitch', pitch.toFixed(1), 'yaw', yaw.toFixed(1));
+        }
+
+        function enterVRMode() {
+            // Transfer viewing angle to A-Frame before switching
+            transferCameraToVR();
+
+            document.getElementById('vrScene').classList.add('active');
+            document.getElementById('viewer3d').style.display = 'none';
+            document.getElementById('topbar').style.display = 'none';
+            document.getElementById('controlBar').style.display = 'none';
+            document.getElementById('mobileControls').style.display = 'none';
+            var info = document.getElementById('infoPanel');
+            if (info) info.style.display = 'none';
+            if (animId) { cancelAnimationFrame(animId); animId = null; }
+
+            setTimeout(function() {
+                var aScene = document.getElementById('aScene');
+                if (aScene && aScene.enterVR) aScene.enterVR();
+            }, 500);
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            var aScene = document.getElementById('aScene');
+            if (aScene) {
+                aScene.addEventListener('exit-vr', function() {
+                    document.getElementById('vrScene').classList.remove('active');
+                    document.getElementById('viewer3d').style.display = '';
+                    document.getElementById('topbar').style.display = '';
+                    document.getElementById('controlBar').style.display = '';
+                    document.getElementById('mobileControls').style.display = '';
+                    var info = document.getElementById('infoPanel');
+                    if (info) info.style.display = '';
+                    if (!animId) animate();
+                });
+            }
+        });
+
+        // ═══════════════════════════════════════════════════════
+        //  QR Modal
+        // ═══════════════════════════════════════════════════════
+        window.showModal = function() {
+            document.getElementById('modalUrl').textContent =
+                'https://' + NETWORK_IP + ':5050/vr/' + JOB;
+            document.getElementById('modal').classList.add('show');
+        };
+        window.closeModal = function() {
+            document.getElementById('modal').classList.remove('show');
+        };
+
+        // ═══════════════════════════════════════════════════════
+        //  Helpers
+        // ═══════════════════════════════════════════════════════
+        function isMobile() {
+            return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+                   ('ontouchstart' in window && window.innerWidth < 1024);
+        }
+
+        // ═══════════════════════════════════════════════════════
+        //  Boot
+        // ═══════════════════════════════════════════════════════
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', initViewer);
+        } else {
+            initViewer();
+        }
+
+        if (isMobile()) {
+            document.addEventListener('DOMContentLoaded', function() {
+                document.getElementById('btnVR').textContent = '🥽 Enter VR';
+            });
+        }
+    })();
+    </script>
+</body>
+
+</html>

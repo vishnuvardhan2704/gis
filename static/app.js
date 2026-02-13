@@ -163,6 +163,15 @@ function init3DToggle() {
     closeBtn.addEventListener('click', () => {
         close3DView();
     });
+
+    // VR button
+    const vrBtn = document.getElementById('openVrBtn');
+    if (vrBtn) {
+        vrBtn.addEventListener('click', () => {
+            if (!currentJobId) return;
+            openVRViewer();
+        });
+    }
 }
 
 function open3DView() {
@@ -217,6 +226,35 @@ function close3DView() {
         destroy3DScene();
     }
     document.getElementById('view3d').innerHTML = '';
+}
+
+
+// ── VR Viewer ──────────────────────────────────────────────────────────────
+function openVRViewer() {
+    if (!currentJobId) return;
+
+    // Open VR viewer in new tab (works on same machine)
+    window.open(`/vr/${currentJobId}`, '_blank');
+
+    // Show QR code panel for phone access
+    const panel = document.getElementById('vrQrPanel');
+    const qrImg = document.getElementById('vrQrImg');
+    const urlText = document.getElementById('vrUrlText');
+
+    qrImg.src = `/api/qr-vr/${currentJobId}`;
+    panel.classList.remove('hidden');
+
+    // Fetch the URL to display
+    fetch(`/api/qr-vr/${currentJobId}`).then(r => r.ok && r).then(() => {
+        // Show the URL text — fetch the real network IP from server
+        fetch('/api/network-ip').then(r => r.json()).then(d => {
+            urlText.textContent = `https://${d.ip}:5050/vr/${currentJobId}`;
+        }).catch(() => {
+            const host = window.location.hostname;
+            const port = window.location.port || '5050';
+            urlText.textContent = `https://${host}:${port}/vr/${currentJobId}`;
+        });
+    });
 }
 
 
