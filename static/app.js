@@ -10,16 +10,20 @@ let riskOverlay = null;
 let roadsLayer = null;
 let evacLayer = null;
 let escapeMarker = null;
+let buildingsLayer = null;
 let selectedLat = null;
 let selectedLon = null;
 let currentJobId = null;
 let pollTimer = null;
+let is3DOpen = false;
 
 // ── Init ───────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
     initMap();
     initControls();
+    initSearch();
     initSidebarToggle();
+    init3DToggle();
 });
 
 
@@ -80,6 +84,139 @@ function initSidebarToggle() {
     toggle.addEventListener('click', () => {
         sidebar.classList.toggle('open');
     });
+}
+
+
+// ── Location Search (Nominatim) ───────────────────────────────────────────
+function initSearch() {
+    const input = document.getElementById('searchInput');
+    const btn = document.getElementById('searchBtn');
+    const resultsDiv = document.getElementById('searchResults');
+    let debounceTimer = null;
+
+    btn.addEventListener('click', () => doSearch(input.value));
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') doSearch(input.value);
+    });
+    input.addEventListener('input', () => {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+            if (input.value.length >= 3) doSearch(input.value);
+        }, 500);
+    });
+
+    // Close results on click outside
+    document.addEventListener('click', (e) => {
+        if (!e.target.closest('.search-bar') && !e.target.closest('.search-results')) {
+            resultsDiv.classList.add('hidden');
+        }
+    });
+}
+
+function doSearch(query) {
+    if (!query || query.length < 2) return;
+    const resultsDiv = document.getElementById('searchResults');
+    resultsDiv.innerHTML = '<div class="search-loading">Searching...</div>';
+    resultsDiv.classList.remove('hidden');
+
+    fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5`)
+        .then(r => r.json())
+        .then(results => {
+            if (!results.length) {
+                resultsDiv.innerHTML = '<div class="search-loading">No results found</div>';
+                return;
+            }
+            resultsDiv.innerHTML = results.map(r => `
+                <div class="search-result-item" data-lat="${r.lat}" data-lon="${r.lon}">
+                    <span class="search-result-name">${r.display_name.split(',').slice(0, 3).join(', ')}</span>
+                    <span class="search-result-type">${r.type}</span>
+                </div>
+            `).join('');
+
+            resultsDiv.querySelectorAll('.search-result-item').forEach(item => {
+                item.addEventListener('click', () => {
+                    const lat = parseFloat(item.dataset.lat);
+                    const lon = parseFloat(item.dataset.lon);
+                    setLocation(lat, lon);
+                    map.setView([lat, lon], 13);
+                    resultsDiv.classList.add('hidden');
+                    document.getElementById('searchInput').value = item.querySelector('.search-result-name').textContent;
+                });
+            });
+        })
+        .catch(() => {
+            resultsDiv.innerHTML = '<div class="search-loading">Search failed</div>';
+        });
+}
+
+
+// ── 3D View toggle ───────────────────────────────────────────────────────
+function init3DToggle() {
+    const toggleBtn = document.getElementById('toggle3dBtn');
+    const closeBtn = document.getElementById('close3dBtn');
+
+    toggleBtn.addEventListener('click', () => {
+        if (!currentJobId) return;
+        open3DView();
+    });
+
+    closeBtn.addEventListener('click', () => {
+        close3DView();
+    });
+}
+
+function open3DView() {
+    is3DOpen = true;
+    document.getElementById('view3d').classList.remove('hidden');
+    document.getElementById('close3dBtn').classList.remove('hidden');
+    document.getElementById('map').style.display = 'none';
+    document.getElementById('sidebar').style.display = 'none';
+    document.getElementById('sidebarToggle').style.display = 'none';
+
+    // Show 3D HUD with camera controls
+    const hud = document.getElementById('hud3d');
+    hud.classList.remove('hidden');
+    hud.innerHTML = `
+        <div style="margin-bottom: 1rem;">
+            <h3 style="margin: 0 0 0.5rem 0; font-size: 0.9rem; font-weight: 600; color: #f8fafc;">📐 3D Terrain View</h3>
+            <p style="margin: 0; font-size: 0.75rem; color: #94a3b8;">Professional topographic model with flood risk overlay</p>
+        </div>
+        
+        <div style="margin-bottom: 1rem;">
+            <div style="font-size: 0.7rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.4rem;">Camera View</div>
+            <div style="display: flex; gap: 0.5rem;">
+                <button onclick="setCameraPreset('perspective')" class="btn-camera-preset" data-preset="perspective">Perspective</button>
+                <button onclick="setCameraPreset('oblique')" class="btn-camera-preset" data-preset="oblique">Oblique</button>
+                <button onclick="setCameraPreset('top')" class="btn-camera-preset" data-preset="top">Top</button>
+            </div>
+        </div>
+        
+        <div style="font-size: 0.75rem; color: #94a3b8; line-height: 1.5;">
+            <div style="margin-bottom: 0.3rem;">🖱️ <strong>Left drag:</strong> Rotate</div>
+            <div style="margin-bottom: 0.3rem;">🖱️ <strong>Right drag:</strong> Pan</div>
+            <div>🖱️ <strong>Scroll:</strong> Zoom</div>
+        </div>
+    `;
+
+    // Load 3D terrain
+    if (typeof load3DTerrain === 'function') {
+        load3DTerrain(currentJobId);
+    }
+}
+
+function close3DView() {
+    is3DOpen = false;
+    document.getElementById('view3d').classList.add('hidden');
+    document.getElementById('hud3d').classList.add('hidden');
+    document.getElementById('close3dBtn').classList.add('hidden');
+    document.getElementById('map').style.display = '';
+    document.getElementById('sidebar').style.display = '';
+    document.getElementById('sidebarToggle').style.display = '';
+
+    if (typeof destroy3DScene === 'function') {
+        destroy3DScene();
+    }
+    document.getElementById('view3d').innerHTML = '';
 }
 
 
@@ -209,6 +346,8 @@ function onAnalysisComplete(result) {
     displayRoads(result);
     displayEvacuation(result);
     displayEscapeDestination(result);
+    displayBuildings(result);
+    displayImpactStats(result);
     displayStats(result);
 }
 
@@ -290,6 +429,88 @@ function displayEscapeDestination(result) {
         `🛡️ Safe Zone (FSI=${(dest.fsi || 0).toFixed(3)})`,
         { permanent: true, direction: 'top', offset: [0, -14], className: 'escape-tooltip' }
     );
+}
+
+
+// ── Building markers on 2D map ─────────────────────────────────────────────
+function displayBuildings(result) {
+    if (buildingsLayer) { map.removeLayer(buildingsLayer); buildingsLayer = null; }
+    const buildings = result.buildings;
+    if (!buildings || !buildings.length) return;
+
+    const typeIcons = {
+        hospital: '🏥',
+        school: '🏫',
+        commercial: '🏢',
+        residential: '🏠',
+    };
+
+    const markers = buildings.map(b => {
+        const fsi = b.fsi || 0;
+        let fillColor = '#66bb6a';
+        if (fsi >= 0.66) fillColor = '#e53935';
+        else if (fsi >= 0.33) fillColor = '#ffa726';
+
+        const marker = L.circleMarker([b.lat, b.lon], {
+            radius: b.type === 'hospital' || b.type === 'school' ? 7 : 4,
+            fillColor: fillColor,
+            color: '#fff',
+            weight: 1,
+            fillOpacity: 0.8,
+        });
+
+        const icon = typeIcons[b.type] || '🏠';
+        const name = b.name ? `<strong>${b.name}</strong><br>` : '';
+        marker.bindTooltip(
+            `${icon} ${name}${b.type} (${b.floors}F)<br>FSI: ${fsi.toFixed(3)}<br>Est. Pop: ${b.pop}`,
+            { sticky: true, className: 'building-tooltip' }
+        );
+        return marker;
+    });
+
+    buildingsLayer = L.layerGroup(markers).addTo(map);
+}
+
+
+// ── Impact stats display ──────────────────────────────────────────────────
+function displayImpactStats(result) {
+    const div = document.getElementById('impactStats');
+    const impact = result.impact_stats;
+    if (!impact || !impact.total_buildings) {
+        div.innerHTML = '';
+        return;
+    }
+
+    const riskPct = impact.total_buildings > 0
+        ? ((impact.at_risk / impact.total_buildings) * 100).toFixed(0)
+        : 0;
+
+    div.innerHTML = `
+        <h3>🏗️ Building Impact</h3>
+        <div class="impact-grid">
+            <div class="impact-item">
+                <span class="impact-num">${impact.total_buildings}</span>
+                <span class="impact-label">Buildings</span>
+            </div>
+            <div class="impact-item warn">
+                <span class="impact-num">${impact.at_risk}</span>
+                <span class="impact-label">At Risk (${riskPct}%)</span>
+            </div>
+            <div class="impact-item danger">
+                <span class="impact-num">${impact.high_risk}</span>
+                <span class="impact-label">High Risk</span>
+            </div>
+            <div class="impact-item">
+                <span class="impact-num">${(impact.population_at_risk || 0).toLocaleString()}</span>
+                <span class="impact-label">Pop. at Risk</span>
+            </div>
+        </div>
+        ${impact.critical_facilities > 0 ? `
+            <div class="impact-critical">
+                ⚠️ <strong>${impact.critical_facilities}</strong> critical facilities (hospitals/schools) at risk
+            </div>
+        ` : ''}
+    `;
 }
 
 
@@ -425,11 +646,13 @@ function clearResults() {
     if (roadsLayer) { map.removeLayer(roadsLayer); roadsLayer = null; }
     if (evacLayer) { map.removeLayer(evacLayer); evacLayer = null; }
     if (escapeMarker) { map.removeLayer(escapeMarker); escapeMarker = null; }
+    if (buildingsLayer) { map.removeLayer(buildingsLayer); buildingsLayer = null; }
 
     document.getElementById('resultsPanel').classList.add('hidden');
     document.getElementById('statsGrid').innerHTML = '';
     document.getElementById('roadStats').innerHTML = '';
     document.getElementById('shelterInfo').innerHTML = '';
+    document.getElementById('impactStats').innerHTML = '';
 
     if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
 }

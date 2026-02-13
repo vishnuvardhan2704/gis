@@ -17,6 +17,7 @@ import traceback
 import io
 import base64
 import threading
+import requests as http_requests
 
 import numpy as np
 from flask import Flask, render_template, request, jsonify, send_file
@@ -145,6 +146,76 @@ def risk_overlay(job_id):
     return jsonify({"error": "Overlay not ready"}), 404
 
 
+@app.route("/api/terrain3d/<job_id>")
+def terrain3d_data(job_id):
+    """Serve high-resolution DEM + FSI grids as JSON for professional 3D view."""
+    import rasterio
+    from scipy.ndimage import zoom
+
+    risk_tif = os.path.join(config.OUTPUT_DIR, config.RISK_GEOTIFF)
+    dem_tif = os.path.join(config.OUTPUT_DIR, "dem_terrain.tif")
+
+    if not os.path.exists(risk_tif) or not os.path.exists(dem_tif):
+        return jsonify({"error": "Data not ready"}), 404
+
+    # High-resolution grid for smooth 3D terrain (professional GIS quality)
+    DEM_GRID = 256  # 256×256 for smooth terrain surface
+    FSI_GRID = 128  # 128×128 for color overlay (lower res is fine)
+
+    with rasterio.open(dem_tif) as src:
+        dem_band = src.read(1)
+        bounds = src.bounds
+        transform = src.transform
+
+    with rasterio.open(risk_tif) as src:
+        fsi_band = src.read(1)
+
+    # High-res DEM with bicubic interpolation for smooth terrain
+    dem_highres = zoom(dem_band, (DEM_GRID / dem_band.shape[0], DEM_GRID / dem_band.shape[1]), order=3)
+    
+    # Medium-res FSI with bilinear interpolation
+    fsi_midres = zoom(fsi_band, (FSI_GRID / fsi_band.shape[0], FSI_GRID / fsi_band.shape[1]), order=1)
+
+    # Replace NaN with 0
+    dem_highres = np.nan_to_num(dem_highres, nan=0.0)
+    fsi_midres = np.nan_to_num(fsi_midres, nan=0.0)
+
+    # Compute elevation statistics for vertical scale reference
+    dem_mean = float(np.mean(dem_highres[dem_highres > 0]))
+    dem_std = float(np.std(dem_highres[dem_highres > 0]))
+
+    # Get buildings + evac from the job result
+    with jobs_lock:
+        job = jobs.get(job_id, {})
+    result = job.get("result", {}) or {}
+
+    return app.response_class(
+        response=json.dumps({
+            "dem": dem_highres.tolist(),
+            "fsi": fsi_midres.tolist(),
+            "dem_rows": DEM_GRID,
+            "dem_cols": DEM_GRID,
+            "fsi_rows": FSI_GRID,
+            "fsi_cols": FSI_GRID,
+            "dem_min": float(np.nanmin(dem_highres)),
+            "dem_max": float(np.nanmax(dem_highres)),
+            "dem_mean": dem_mean,
+            "dem_std": dem_std,
+            "fsi_min": float(np.nanmin(fsi_midres)),
+            "fsi_max": float(np.nanmax(fsi_midres)),
+            "bounds": {
+                "south": bounds.bottom, "west": bounds.left,
+                "north": bounds.top, "east": bounds.right,
+            },
+            "buildings": result.get("buildings", []),
+            "evacuation_route": result.get("evacuation_route"),
+            "escape_destination": result.get("escape_destination"),
+            "resolution_meters": config.EXPORT_SCALE,
+        }, cls=NumpyEncoder),
+        mimetype='application/json',
+    )
+
+
 # ── Pipeline runner ─────────────────────────────────────────────────────────
 
 
@@ -241,7 +312,16 @@ def _run_pipeline(job_id, lat, lon, radius_km, rainfall_mm):
         _update_progress(job_id, "Generating risk map overlay...")
         overlay_data = _create_risk_png(risk_tif, job_id, dem_tif_path=dem_tif)
 
-        # Phase 5-6: Roads + Flood Escape Routing
+        # Phase 5: Fetch buildings from OSM Overpass
+        _update_progress(job_id, "Fetching buildings from OpenStreetMap...")
+        buildings_data = []
+        try:
+            buildings_data = _fetch_buildings(bounds)
+            print(f"[APP] Fetched {len(buildings_data)} buildings from OSM")
+        except Exception as e:
+            print(f"[APP] Building fetch failed: {e}")
+
+        # Phase 6: Roads + Flood Escape Routing
         _update_progress(job_id, "Analysing road network...")
         road_geojson = None
         evac_geojson = None
@@ -269,9 +349,10 @@ def _run_pipeline(job_id, lat, lon, radius_km, rainfall_mm):
             print(f"[APP] Road analysis failed: {e}")
             import traceback; traceback.print_exc()
 
-        # Phase 7: Statistics
+        # Phase 7: Statistics + Impact
         _update_progress(job_id, "Computing risk statistics...")
         risk_stats = compute_risk_statistics(risk_tif)
+        impact_stats = _compute_impact_stats(buildings_data, risk_tif)
 
         # Assemble result
         result = {
@@ -285,6 +366,8 @@ def _run_pipeline(job_id, lat, lon, radius_km, rainfall_mm):
             "roads": road_geojson,
             "evacuation_route": evac_geojson,
             "escape_destination": escape_dest,
+            "buildings": buildings_data,
+            "impact_stats": impact_stats,
             "params": {
                 "lat": lat, "lon": lon,
                 "radius_km": radius_km,
@@ -412,6 +495,102 @@ def _roads_to_geojson(G):
         }
         features.append(feat)
     return {"type": "FeatureCollection", "features": features}
+
+
+def _fetch_buildings(bounds):
+    """
+    Fetch building footprints from OSM Overpass API within the given bounds.
+    Returns list of {lat, lon, type, floors, name}.
+    """
+    south, west, north, east = bounds[1], bounds[0], bounds[3], bounds[2]
+    query = f'[out:json][timeout:15];(way["building"]({south},{west},{north},{east}););out center qt 150;'
+    try:
+        resp = http_requests.get(
+            f'https://overpass-api.de/api/interpreter?data={query}',
+            timeout=20,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        print(f"[BLDG] Overpass query failed: {e}")
+        return []
+
+    pop_per_floor = {'residential': 4, 'commercial': 10, 'hospital': 50, 'school': 30}
+    buildings = []
+    for el in data.get('elements', []):
+        center = el.get('center')
+        if not center or 'lat' not in center or 'lon' not in center:
+            continue
+        tags = el.get('tags', {})
+        bt = tags.get('building', '')
+        am = tags.get('amenity', '')
+        # Classify type
+        if am == 'hospital' or bt == 'hospital':
+            btype = 'hospital'
+        elif am in ('school', 'university', 'college') or bt == 'school':
+            btype = 'school'
+        elif bt in ('commercial', 'retail', 'office', 'industrial', 'warehouse'):
+            btype = 'commercial'
+        else:
+            btype = 'residential'
+        floors = 1
+        try:
+            floors = int(tags.get('building:levels', '1'))
+        except (ValueError, TypeError):
+            floors = {'commercial': 3, 'hospital': 4, 'school': 2}.get(btype, 1)
+        pop = pop_per_floor.get(btype, 4) * floors
+        buildings.append({
+            'lat': center['lat'],
+            'lon': center['lon'],
+            'type': btype,
+            'floors': floors,
+            'name': tags.get('name'),
+            'pop': pop,
+        })
+    return buildings
+
+
+def _compute_impact_stats(buildings, risk_tif_path):
+    """Cross-reference buildings with FSI raster to compute impact stats."""
+    import rasterio
+
+    if not buildings or not os.path.exists(risk_tif_path):
+        return {'total_buildings': len(buildings), 'at_risk': 0, 'high_risk': 0,
+                'population_at_risk': 0, 'critical_facilities': 0}
+
+    with rasterio.open(risk_tif_path) as src:
+        transform = src.transform
+        band = src.read(1)
+        rows, cols = band.shape
+
+    at_risk = 0
+    high_risk = 0
+    pop_at_risk = 0
+    critical = 0
+
+    for b in buildings:
+        col_idx, row_idx = ~transform * (b['lon'], b['lat'])
+        row_idx, col_idx = int(round(row_idx)), int(round(col_idx))
+        if 0 <= row_idx < rows and 0 <= col_idx < cols:
+            fsi = float(band[row_idx, col_idx])
+        else:
+            fsi = 0.0
+        b['fsi'] = round(fsi, 3)
+        if fsi >= 0.33:
+            at_risk += 1
+            pop_at_risk += b.get('pop', 0)
+            if fsi >= 0.66:
+                high_risk += 1
+        if b['type'] in ('hospital', 'school') and fsi >= 0.33:
+            critical += 1
+
+    return {
+        'total_buildings': len(buildings),
+        'at_risk': at_risk,
+        'high_risk': high_risk,
+        'population_at_risk': pop_at_risk,
+        'critical_facilities': critical,
+    }
 
 
 def _route_to_geojson(route_coords):

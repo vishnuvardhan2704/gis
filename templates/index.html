@@ -10,6 +10,10 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
+    <!-- Three.js for 3D visualization (r146 = last version with examples/js/) -->
+    <script src="https://unpkg.com/three@0.146.0/build/three.min.js"></script>
+    <script src="https://unpkg.com/three@0.146.0/examples/js/controls/OrbitControls.js"></script>
+
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -29,8 +33,16 @@
                 <span class="logo-icon">🌊</span>
                 <h1>Flood Analysis</h1>
             </div>
-            <p class="subtitle">Click the map to select a location</p>
+            <p class="subtitle">Search a place or click the map</p>
         </div>
+
+        <!-- Location search -->
+        <div class="search-bar">
+            <input type="text" id="searchInput" class="search-input" placeholder="Search location..."
+                autocomplete="off">
+            <button id="searchBtn" class="btn-search" title="Search">🔍</button>
+        </div>
+        <div id="searchResults" class="search-results hidden"></div>
 
         <!-- Coordinates input (editable or set by map click) -->
         <div class="coord-display" id="coordDisplay">
@@ -82,9 +94,20 @@
             <h2>Situation Report</h2>
             <div class="stats-grid" id="statsGrid"></div>
 
+            <!-- Impact stats -->
+            <div class="impact-stats" id="impactStats"></div>
+
             <div class="road-stats" id="roadStats"></div>
 
             <div class="shelter-info" id="shelterInfo"></div>
+
+            <!-- 3D View toggle -->
+            <button id="toggle3dBtn" class="btn-3d" title="View realistic 3D terrain model with flood risk overlay">
+                <span>🗺️</span> <span>Open 3D Terrain View</span>
+            </button>
+            <p style="font-size: 0.7rem; color: #64748b; margin: 0.5rem 0 0 0; text-align: center;">
+                Professional topographic visualization
+            </p>
         </div>
 
         <!-- Legend -->
@@ -104,6 +127,12 @@
     <!-- Toggle sidebar on mobile -->
     <button id="sidebarToggle" class="sidebar-toggle">☰</button>
 
+    <!-- 3D View overlay -->
+    <div id="view3d" class="view3d-container hidden"></div>
+    <div id="hud3d" class="hud3d hidden"></div>
+    <button id="close3dBtn" class="btn-close3d hidden">✕ Back to Map</button>
+
+    <script src="/static/terrain3d.js"></script>
     <script src="/static/app.js"></script>
 </body>
 
