@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flood Susceptibility — Interactive Analysis</title>
+
+    <!-- Leaflet -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+
+    <!-- Map container -->
+    <div id="map"></div>
+
+    <!-- Sidebar -->
+    <div id="sidebar" class="sidebar">
+        <div class="sidebar-header">
+            <div class="logo">
+                <span class="logo-icon">🌊</span>
+                <h1>Flood Analysis</h1>
+            </div>
+            <p class="subtitle">Click the map to select a location</p>
+        </div>
+
+        <!-- Coordinates input (editable or set by map click) -->
+        <div class="coord-display" id="coordDisplay">
+            <div class="coord-row">
+                <label class="coord-label" for="latInput">Lat</label>
+                <input type="number" class="coord-input" id="latInput" step="any" placeholder="17.385">
+            </div>
+            <div class="coord-row">
+                <label class="coord-label" for="lonInput">Lon</label>
+                <input type="number" class="coord-input" id="lonInput" step="any" placeholder="78.487">
+            </div>
+            <button id="goToCoordBtn" class="btn-goto" title="Go to coordinates">📍 Go</button>
+        </div>
+
+        <!-- Controls -->
+        <div class="controls">
+            <div class="control-group">
+                <label for="radiusSlider">
+                    Radius
+                    <span class="control-value" id="radiusValue">5 km</span>
+                </label>
+                <input type="range" id="radiusSlider" min="1" max="20" step="1" value="5">
+            </div>
+
+            <div class="control-group">
+                <label for="rainfallInput">
+                    Rainfall scenario
+                    <span class="control-value" id="rainfallValue">150 mm</span>
+                </label>
+                <input type="range" id="rainfallInput" min="10" max="500" step="10" value="150">
+            </div>
+
+            <button id="analyzeBtn" class="btn-analyze" disabled>
+                <span class="btn-icon">⚡</span>
+                <span class="btn-text">Analyse</span>
+            </button>
+        </div>
+
+        <!-- Progress -->
+        <div id="progressPanel" class="progress-panel hidden">
+            <div class="progress-bar-container">
+                <div class="progress-bar" id="progressBar"></div>
+            </div>
+            <p class="progress-text" id="progressText">Initialising...</p>
+        </div>
+
+        <!-- Results -->
+        <div id="resultsPanel" class="results-panel hidden">
+            <h2>Situation Report</h2>
+            <div class="stats-grid" id="statsGrid"></div>
+
+            <div class="road-stats" id="roadStats"></div>
+
+            <div class="shelter-info" id="shelterInfo"></div>
+        </div>
+
+        <!-- Legend -->
+        <div class="legend">
+            <h3>Risk Legend</h3>
+            <div class="legend-items">
+                <div class="legend-item"><span class="legend-color" style="background:#2ecc71"></span> Low (0–0.33)
+                </div>
+                <div class="legend-item"><span class="legend-color" style="background:#f1c40f"></span> Medium
+                    (0.33–0.66)</div>
+                <div class="legend-item"><span class="legend-color" style="background:#e74c3c"></span> High (0.66–1.0)
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toggle sidebar on mobile -->
+    <button id="sidebarToggle" class="sidebar-toggle">☰</button>
+
+    <script src="/static/app.js"></script>
+</body>
+
+</html>
